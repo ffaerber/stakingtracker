@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+*.db
+*.db-*
+scratch-*
+*.local
+.DS_Store
+
+# Real config with private node URLs + validator indices. Commit
+# docker-compose.example.yml instead; copy it to docker-compose.yml locally.
+docker-compose.yml

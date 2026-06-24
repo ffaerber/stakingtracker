@@ -1,0 +1,37 @@
+# Example config. Copy to docker-compose.yml and fill in your own node URLs and
+# validator indices (docker-compose.yml is gitignored so your real values stay
+# private):
+#
+#   cp docker-compose.example.yml docker-compose.yml
+#   docker compose up --build      # then open http://localhost:3000
+#
+# All config is set via the STT_* env vars below; the Settings page is read-only.
+# Data persists in ./data (SQLite), so history accumulates across runs.
+
+services:
+  stakingtracker:
+    build: .
+    container_name: stakingtracker
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      - STT_DB_PATH=/data/stakingtracker.db
+      # Your own beacon node (archive, for full history) and execution RPC. These
+      # defaults assume both run on the same Docker network as this container;
+      # use full URLs (e.g. https://beacon.example.com) for a remote node.
+      - STT_BEACON_URL=http://mainnet-lighthouse:5052
+      - STT_EXECUTION_URL=http://mainnet-geth:8545
+      # Comma-separated validator indices to track.
+      - STT_VALIDATORS=12345,67890
+      - STT_CURRENCY=eur
+      # First execution block to scan (history start). 17034870 = Shapella (first
+      # withdrawals); raise it to start later, e.g. a specific tax-year boundary.
+      - STT_SCAN_FROM_BLOCK=17034870
+      # Max execution blocks scanned per Collect run (the scan resumes each run).
+      - STT_SCAN_MAX=250000
+      # Optional app-level basic auth (uncomment to require login):
+      # - STT_USER=admin
+      # - STT_PASS=changeme
+    restart: unless-stopped

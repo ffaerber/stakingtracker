@@ -1,0 +1,15 @@
+{
+  "name": "stakingtracker",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Self-hosted ETH staking rewards tracker + tax report generator (Fastify backend, React frontend, SQLite).",
+  "scripts": {
+    "dev:web": "npm --prefix web run dev",
+    "dev:server": "npm --prefix server run dev",
+    "build:web": "npm --prefix web run build",
+    "build:server": "npm --prefix server run build",
+    "build": "npm --prefix web install && npm --prefix web run build && npm --prefix server install && npm --prefix server run build",
+    "test": "npm --prefix server test",
+    "start": "node server/dist/index.js"
+  }
+}
