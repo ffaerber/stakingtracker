@@ -58,16 +58,21 @@ function gaps(): DataGap[] {
       'Execution-layer rewards = the fee-recipient balance change per proposed block (priority fees + MEV-boost payment).',
   })
 
-  // Proposal-scan coverage: mirror the withdrawal note so the user knows the EL
-  // history is bounded / still catching up, not complete.
-  const propFromSlot = getMeta('prop_scan_from')
-  if (propFromSlot) {
-    const propCur = Number(getMeta('prop_cursor') ?? 0)
-    const propHead = Number(getMeta('prop_head') ?? 0)
-    const fromDate = isoFromUnix(slotToUnix(Number(propFromSlot)))
-    const scanning = propHead > 0 && propCur < propHead ? ` (scanned to slot ${propCur}/${propHead} — still in progress)` : ''
+  // Proposal-scan coverage. The scan runs newest-first, so [prop_low, prop_high]
+  // is the covered slot window; older history backfills toward prop_floor.
+  const propLow = getMeta('prop_low')
+  const propHigh = getMeta('prop_high')
+  if (propLow && propHigh) {
+    const lowDate = isoFromUnix(slotToUnix(Number(propLow)))
+    const highDate = isoFromUnix(slotToUnix(Number(propHigh)))
+    const floor = Number(getMeta('prop_floor') ?? 0)
+    const backfilling = floor > 0 && Number(propLow) > floor
     out.push({
-      message: `Execution-layer rewards scanned from ${fromDate}${scanning}. Block proposals before then aren't included — lower STT_SCAN_FROM_BLOCK to extend history.`,
+      message:
+        `Execution-layer rewards collected for ${lowDate} → ${highDate}.` +
+        (backfilling
+          ? ` Still backfilling older history toward ${isoFromUnix(slotToUnix(floor))} — re-run Collect to continue.`
+          : ''),
     })
   }
   if (getExecutions().some((e) => e.method === 'priority-fees')) {

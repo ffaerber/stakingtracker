@@ -31,6 +31,9 @@ services:
       - STT_SCAN_FROM_BLOCK=17034870
       # Max execution blocks scanned per Collect run (the scan resumes each run).
       - STT_SCAN_MAX=250000
+      # The EL proposal scan makes one tiny beacon request per slot, so it's
+      # latency-bound. Raise concurrency for a fast/remote node to speed it up.
+      - STT_PROP_CONCURRENCY=64
       # Optional app-level basic auth (uncomment to require login):
       # - STT_USER=admin
       # - STT_PASS=changeme

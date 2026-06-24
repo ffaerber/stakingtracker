@@ -15,15 +15,19 @@ progresses.
 
 ## Build the image
 
-Swarm can't build from a local path on every node, so either:
+**A. CI (recommended).** The `.github/workflows/docker-publish.yml` workflow
+builds and pushes `ghcr.io/ffaerber/stakingtracker:latest` on every push to
+`main` (and `:vX.Y.Z` on version tags). Just reference that image below. If the
+package is private, give the Swarm pull access (a read-only PAT, or make the
+package public under the repo's Packages settings).
 
-**A. Build + push to a registry** (recommended), then reference the image:
+**B. Build + push manually** to any registry:
 ```bash
 docker build -t <registry>/stakingtracker:latest .
 docker push <registry>/stakingtracker:latest
 ```
 
-**B. Build from a git context** once the repo is pushed to GitHub:
+**C. Build from a git context** on the node:
 ```yaml
     build:
       context: https://github.com/ffaerber/stakingtracker.git
@@ -34,7 +38,7 @@ docker push <registry>/stakingtracker:latest
 
 ```yaml
   stakingtracker:
-    image: <registry>/stakingtracker:latest   # or use build: (option B)
+    image: ghcr.io/ffaerber/stakingtracker:latest   # from the CI workflow (option A)
     networks:
       - homelab-public
       - homelab-private

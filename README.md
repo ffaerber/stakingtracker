@@ -92,6 +92,8 @@ Build everything: `npm run build` (root). Run tests: `npm test` (engine units).
 | `STT_SCAN_FROM_BLOCK` | — | First execution block to scan (history start) |
 | `STT_SCAN_MAX` | `250000` | Max execution blocks scanned per run (withdrawals) |
 | `STT_PROP_SCAN_MAX` | `100000` | Max beacon slots scanned per run (EL proposals) |
+| `STT_PROP_CONCURRENCY` | `64` | In-flight requests for the per-slot proposal scan (raise for a fast/remote node) |
+| `STT_CONCURRENCY` | `12` | In-flight requests for balance/other scans |
 
 All config comes from these env vars — the Settings page is read-only. Pin the
 whole config in `docker-compose.yml`. At minimum set `STT_BEACON_URL` and

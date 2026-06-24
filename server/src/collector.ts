@@ -34,7 +34,11 @@ const MAX_BLOCKS_PER_RUN = Number(process.env.STT_SCAN_MAX ?? 250_000)
 // Block-proposal scan is per-slot (one header request each), so it's bounded
 // separately and catches up across runs like the withdrawal scan.
 const MAX_SLOTS_PER_RUN = Number(process.env.STT_PROP_SCAN_MAX ?? 100_000)
-const CONCURRENCY = 12
+const CONCURRENCY = Number(process.env.STT_CONCURRENCY ?? 12)
+// The proposal scan is latency-bound: one tiny beacon header request per slot,
+// so it scales with far more in-flight requests than the heavier scans —
+// especially against a remote node. Tune up if your node keeps up.
+const PROP_CONCURRENCY = Number(process.env.STT_PROP_CONCURRENCY ?? 64)
 
 export function collectorStatus() {
   return { running, lastError, progress }
@@ -60,11 +64,23 @@ export async function collect(log: (m: string) => void = () => {}): Promise<void
     upsertValidators(vals.map((v) => ({ index: v.index, publickey: v.publickey })))
     const indexSet = new Set(vals.map((v) => v.index))
 
-    // 1. Daily balances (one slot per UTC day; historical needs reconstruction,
-    //    recent/today always works and is what accrual needs going forward).
+    // Shared scan window: STT_SCAN_FROM_BLOCK (or a default lookback) bounds how
+    // far back balances, withdrawals, and proposals reach, so we don't sample
+    // years of history the node can't serve.
     const beaconHead = await headSlot(s.beaconUrl)
+    const execHead = await getHeadBlock(s.executionUrl)
+    const envStart = Number(process.env.STT_SCAN_FROM_BLOCK ?? 0)
+    const startBlock = envStart > 0 ? envStart : Math.max(0, execHead - DEFAULT_LOOKBACK_BLOCKS)
+    const startUnix = await blockTimestamp(s.executionUrl, startBlock)
+    const scanStartDate = isoFromUnix(startUnix)
+
+    // 1. Daily balances (one slot per UTC day; historical needs an archive node,
+    //    recent/today always works and is what accrual needs going forward).
+    //    Bounded to the scan window, not the full validator lifetime.
     const startEpoch = Math.min(...vals.map((v) => v.activationEpoch))
-    const days = dateRange(isoFromUnix(epochToUnix(startEpoch)), isoFromUnix(Math.floor(Date.now() / 1000)))
+    const activationDate = isoFromUnix(epochToUnix(startEpoch))
+    const balStart = scanStartDate > activationDate ? scanStartDate : activationDate
+    const days = dateRange(balStart, isoFromUnix(Math.floor(Date.now() / 1000)))
     note(`Sampling daily balances (${days.length} days)…`)
     await mapLimit(days, CONCURRENCY, async (date) => {
       const slot = Math.min(unixToSlot(endOfUtcDay(date)), beaconHead)
@@ -78,13 +94,11 @@ export async function collect(log: (m: string) => void = () => {}): Promise<void
     })
 
     // 2. Withdrawals from execution blocks, resumable via a block cursor.
-    const execHead = await getHeadBlock(s.executionUrl)
-    const envStart = Number(process.env.STT_SCAN_FROM_BLOCK ?? 0)
     // Optional upper bound, e.g. to scan a single tax year. Defaults to head.
     const envTo = Number(process.env.STT_SCAN_TO_BLOCK ?? 0)
     const upper = envTo > 0 ? Math.min(envTo, execHead) : execHead
     const cursor = Number(getMeta('wd_cursor') ?? 0)
-    const from = cursor > 0 ? cursor + 1 : envStart > 0 ? envStart : Math.max(0, execHead - DEFAULT_LOOKBACK_BLOCKS)
+    const from = cursor > 0 ? cursor + 1 : startBlock
     const to = Math.min(from + MAX_BLOCKS_PER_RUN - 1, upper)
     if (to >= from) {
       note(`Scanning withdrawals, blocks ${from}–${to} (head ${execHead})…`)
@@ -98,35 +112,40 @@ export async function collect(log: (m: string) => void = () => {}): Promise<void
       note(`Stored ${events.length} withdrawal(s) from blocks ${from}–${to}.`)
     }
 
-    // 3. Execution-layer block-proposal rewards. Per slot we read the proposer
-    //    from a cheap beacon header; only our validators' slots get the full
-    //    block + reward valuation. Resumable via a slot cursor.
-    const propCursor = Number(getMeta('prop_cursor') ?? 0)
-    let propFrom: number
-    if (propCursor > 0) {
-      propFrom = propCursor + 1
-    } else {
-      // Start from the same point as the withdrawal scan, mapped into slot space,
-      // but never before the merge (no EL rewards exist earlier; a pre-merge
-      // start would otherwise crawl millions of empty/negative slots).
-      const startBlock = envStart > 0 ? envStart : Math.max(0, execHead - DEFAULT_LOOKBACK_BLOCKS)
-      propFrom = Math.max(MAINNET_MERGE_SLOT, unixToSlot(await blockTimestamp(s.executionUrl, startBlock)))
+    // 3. Execution-layer block-proposal rewards, scanned NEWEST-FIRST. Each run
+    //    scans the new tip (blocks since last run) and then backfills older
+    //    history, so current income appears immediately while history fills in.
+    //    Two frontiers in slot space: prop_high (top scanned) and prop_low
+    //    (bottom scanned); floor = scan-window start, never before the merge.
+    const floorSlot = Math.max(MAINNET_MERGE_SLOT, unixToSlot(startUnix))
+    let propHigh = getMeta('prop_high') != null ? Number(getMeta('prop_high')) : beaconHead
+    let propLow = getMeta('prop_low') != null ? Number(getMeta('prop_low')) : beaconHead + 1
+
+    let budget = MAX_SLOTS_PER_RUN
+    const windows: { from: number; to: number; kind: 'tip' | 'back' }[] = []
+    if (beaconHead > propHigh) {
+      // New blocks produced since the last run (the live tip).
+      const tFrom = propHigh + 1
+      const tTo = Math.min(beaconHead, tFrom + budget - 1)
+      windows.push({ from: tFrom, to: tTo, kind: 'tip' })
+      budget -= tTo - tFrom + 1
     }
-    const propTo = Math.min(propFrom + MAX_SLOTS_PER_RUN - 1, beaconHead)
-    if (propTo >= propFrom) {
-      note(`Scanning block proposals, slots ${propFrom}–${propTo} (head ${beaconHead})…`)
+    if (budget > 0 && propLow > floorSlot) {
+      // Backfill older history downward toward the scan-window start.
+      const bTo = propLow - 1
+      const bFrom = Math.max(floorSlot, bTo - budget + 1)
+      windows.push({ from: bFrom, to: bTo, kind: 'back' })
+    }
+
+    if (windows.length) {
       const slots: number[] = []
-      for (let sl = propFrom; sl <= propTo; sl++) slots.push(sl)
+      for (const w of windows) for (let sl = w.from; sl <= w.to; sl++) slots.push(sl)
+      note(`Scanning ${slots.length} slots for block proposals (${windows.map((w) => `${w.from}–${w.to}`).join(', ')})…`)
       const rewards: ExecutionReward[] = []
+      const failed = new Set<number>()
       let scanned = 0
-      // A failing slot (e.g. a transient node error that outlasts retries) must
-      // not abort the whole collection. Record failures and only advance the
-      // cursor up to the last contiguously-successful slot, so failed slots are
-      // retried next run instead of being silently skipped.
       let scanError: string | null = null
-      let firstFailed = Infinity
-      let failedCount = 0
-      await mapLimit(slots, CONCURRENCY, async (slot) => {
+      await mapLimit(slots, PROP_CONCURRENCY, async (slot) => {
         try {
           const proposer = await proposerForSlot(s.beaconUrl, slot)
           if (++scanned % 500 === 0) progress = `Scanning proposals… ${scanned}/${slots.length} slots`
@@ -145,23 +164,32 @@ export async function collect(log: (m: string) => void = () => {}): Promise<void
             method: r.method,
           })
         } catch (e) {
-          failedCount++
-          if (slot < firstFailed) firstFailed = slot
+          failed.add(slot)
           if (!scanError) scanError = e instanceof Error ? e.message : String(e)
         }
       })
       upsertExecutions(rewards)
-      // Commit through the slot before the first failure (everything earlier is
-      // complete); a clean run commits the whole window.
-      const committedTo = Math.min(propTo, firstFailed - 1)
-      if (committedTo >= propFrom) {
-        setMeta('prop_cursor', String(committedTo))
-        setMeta('prop_scan_from', String(propCursor > 0 ? getMeta('prop_scan_from') ?? propFrom : propFrom))
+      // Advance each frontier over its contiguous-successful slots, so a failed
+      // slot is retried next run rather than silently skipped.
+      for (const w of windows) {
+        if (w.kind === 'tip') {
+          let firstFail = Infinity
+          for (const sl of failed) if (sl >= w.from && sl <= w.to && sl < firstFail) firstFail = sl
+          const newHigh = firstFail === Infinity ? w.to : firstFail - 1
+          if (newHigh >= w.from) propHigh = Math.max(propHigh, newHigh)
+        } else {
+          let lastFail = -Infinity
+          for (const sl of failed) if (sl >= w.from && sl <= w.to && sl > lastFail) lastFail = sl
+          const newLow = lastFail === -Infinity ? w.from : lastFail + 1
+          if (newLow <= w.to) propLow = Math.min(propLow, newLow)
+        }
       }
-      setMeta('prop_head', String(beaconHead))
+      setMeta('prop_high', String(propHigh))
+      setMeta('prop_low', String(propLow))
+      setMeta('prop_floor', String(floorSlot))
       note(
-        `Stored ${rewards.length} block-proposal reward(s) from slots ${propFrom}–${committedTo >= propFrom ? committedTo : propFrom - 1}.` +
-          (failedCount ? ` ${failedCount} slot(s) errored (retrying next run): ${scanError}` : ''),
+        `Stored ${rewards.length} block-proposal reward(s).` +
+          (failed.size ? ` ${failed.size} slot(s) errored (retry next run): ${scanError}` : ''),
       )
     }
 
@@ -180,10 +208,10 @@ export async function collect(log: (m: string) => void = () => {}): Promise<void
 
     setMeta('last_collected_at', String(Date.now()))
     const wdLagging = to < upper
-    const propLagging = Number(getMeta('prop_cursor') ?? 0) < beaconHead
+    const propLagging = propLow > floorSlot || propHigh < beaconHead
     note(
       wdLagging || propLagging
-        ? `Done (scans still catching up — withdrawals ${to}/${upper}, proposals ${getMeta('prop_cursor') ?? 0}/${beaconHead}; continues next run).`
+        ? `Done (still catching up — withdrawals ${to}/${upper}, EL proposals backfilled to slot ${propLow}/${floorSlot}, tip ${propHigh}/${beaconHead}; continues next run).`
         : 'Collection complete.',
     )
   } catch (e) {
