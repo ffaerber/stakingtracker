@@ -9,7 +9,9 @@ import {
   upsertPrices,
   getBalanceTotalsByDate,
   getWithdrawals,
+  getStoredBalanceCounts,
 } from './store'
+import { daysToSample } from './sampling'
 import { loadSettings } from './settings'
 import { getMeta, setMeta } from './db'
 import { mapLimit } from './http'
@@ -80,11 +82,16 @@ export async function collect(log: (m: string) => void = () => {}): Promise<void
     const startEpoch = Math.min(...vals.map((v) => v.activationEpoch))
     const activationDate = isoFromUnix(epochToUnix(startEpoch))
     const balStart = scanStartDate > activationDate ? scanStartDate : activationDate
-    const days = dateRange(balStart, isoFromUnix(Math.floor(Date.now() / 1000)))
-    note(`Sampling daily balances (${days.length} days)…`)
+    const window = dateRange(balStart, isoFromUnix(Math.floor(Date.now() / 1000)))
+    const slotOf = (date: string) => Math.min(unixToSlot(endOfUtcDay(date)), beaconHead)
+    const activeOn = (date: string) => vals.filter((v) => v.activationEpoch * SLOTS_PER_EPOCH <= slotOf(date))
+    // Only days not yet stored (plus the last two, which can still change), so
+    // a node that has pruned historic states can keep serving the tracker.
+    const days = daysToSample(window, getStoredBalanceCounts(vals.map((v) => v.index)), (d) => activeOn(d).length)
+    note(`Sampling daily balances (${days.length} of ${window.length} days)…`)
     await mapLimit(days, CONCURRENCY, async (date) => {
-      const slot = Math.min(unixToSlot(endOfUtcDay(date)), beaconHead)
-      const active = vals.filter((v) => v.activationEpoch * SLOTS_PER_EPOCH <= slot)
+      const slot = slotOf(date)
+      const active = activeOn(date)
       if (!active.length) return
       const m = await balancesAtSlot(s.beaconUrl, slot, active.map((v) => v.index))
       if (!m) return

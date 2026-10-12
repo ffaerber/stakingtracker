@@ -26,6 +26,17 @@ export function upsertBalances(rows: { validatorIdx: number; date: string; balan
   tx(rows)
 }
 
+/** Per date, how many of the given validators already have a stored balance. */
+export function getStoredBalanceCounts(validatorIdxs: number[]): Map<string, number> {
+  if (!validatorIdxs.length) return new Map()
+  const rows = db
+    .prepare(
+      `SELECT date, COUNT(*) AS n FROM balances WHERE validator_idx IN (${validatorIdxs.map(() => '?').join(',')}) GROUP BY date`,
+    )
+    .all(...validatorIdxs) as { date: string; n: number }[]
+  return new Map(rows.map((r) => [r.date, r.n]))
+}
+
 export function getBalances(validatorIdx: number): BalanceDay[] {
   const rows = db
     .prepare('SELECT date, balance_gwei FROM balances WHERE validator_idx = ? ORDER BY date')
