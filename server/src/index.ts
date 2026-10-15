@@ -12,6 +12,7 @@ import { reportToCsv, type TaxMethod } from './engine/taxReport'
 import { GWEI_PER_ETH } from './engine/rewards'
 import { SLOTS_PER_EPOCH } from './time'
 import { getMeta } from './db'
+import { metricsText } from './metrics'
 
 // In the compiled output this file is server/dist/index.js, so ../../web/dist
 // resolves to the repo's web build. Override with STT_WEB_DIR in Docker.
@@ -66,6 +67,13 @@ app.post('/api/collect', async (_req, reply) => {
 })
 
 app.get('/api/summary', async () => summary())
+
+// Prometheus scrape target. Persisted data only (no node requests), cached
+// for 5 min. Reached on the internal network; app-level basic auth (if set)
+// applies here too.
+app.get('/metrics', async (_req, reply) =>
+  reply.type('text/plain; version=0.0.4; charset=utf-8').send(await metricsText()),
+)
 
 app.get('/api/report', async (req) => {
   const q = req.query as { year?: string; method?: string }
