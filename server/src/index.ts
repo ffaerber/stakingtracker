@@ -13,6 +13,7 @@ import { GWEI_PER_ETH } from './engine/rewards'
 import { SLOTS_PER_EPOCH } from './time'
 import { getMeta } from './db'
 import { metricsText } from './metrics'
+import { refreshSpot } from './prices'
 
 // In the compiled output this file is server/dist/index.js, so ../../web/dist
 // resolves to the repo's web build. Override with STT_WEB_DIR in Docker.
@@ -131,6 +132,16 @@ async function main() {
 
   await app.listen({ port: PORT, host: HOST })
   setInterval(() => void maybeCollect(), DAY_MS)
+  // Live ETH price for /metrics, polled in the background (see prices.ts).
+  const pollSpot = async () => {
+    try {
+      await refreshSpot((await loadSettings()).currency)
+    } catch (e) {
+      app.log.debug(`spot price fetch failed: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+  void pollSpot()
+  setInterval(() => void pollSpot(), 60_000)
   // Kick a collection shortly after boot if data is stale.
   setTimeout(() => void maybeCollect(), 5000)
 }

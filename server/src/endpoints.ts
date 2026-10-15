@@ -7,4 +7,6 @@ export const COINBASE_BASE = 'https://api.exchange.coinbase.com'
 export const coinbase = {
   candles: (product: string, granularity: number, startIso: string, endIso: string) =>
     `${COINBASE_BASE}/products/${product}/candles?granularity=${granularity}&start=${startIso}&end=${endIso}`,
+  /** Last trade price; keyless. */
+  ticker: (product: string) => `${COINBASE_BASE}/products/${product}/ticker`,
 }

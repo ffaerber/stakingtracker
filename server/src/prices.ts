@@ -45,6 +45,43 @@ async function fetchWindow(product: string, fromSec: number, toSec: number): Pro
   return map
 }
 
+// ---- Spot price -----------------------------------------------------------
+// The daily candles above only change when a collection runs (~12 h). For a
+// live price (Prometheus/Grafana) the last trade is polled in the background,
+// so a metrics scrape never waits on Coinbase. Deliberately not via getJson:
+// its queue and long retry backoff suit history paging, not a 60 s poll.
+
+export interface Spot {
+  price: number
+  currency: string
+  /** Unix ms of the successful fetch. */
+  at: number
+}
+
+let spot: Spot | null = null
+
+export function latestSpot(): Spot | null {
+  return spot
+}
+
+/** Price from a Coinbase ticker payload, or null if it is missing/invalid. */
+export function parseTicker(body: unknown): number | null {
+  const p = Number((body as { price?: unknown } | null)?.price)
+  return Number.isFinite(p) && p > 0 ? p : null
+}
+
+/** Fetch the current ETH price once. A failure keeps the previous value. */
+export async function refreshSpot(currency: string, now = Date.now()): Promise<Spot | null> {
+  const res = await fetch(coinbase.ticker(`ETH-${currency.toUpperCase()}`), {
+    headers: HEADERS,
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) return spot
+  const price = parseTicker(await res.json())
+  if (price != null) spot = { price, currency, at: now }
+  return spot
+}
+
 /** Nearest available price for a date, searching back up to 4 days for gaps. */
 export function priceFor(map: PriceMap, date: string): number | null {
   if (map[date] != null) return map[date]

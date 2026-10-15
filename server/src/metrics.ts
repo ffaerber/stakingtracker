@@ -10,6 +10,7 @@ import { getValidators, getBalances, getPriceMap } from './store'
 import { loadSettings } from './settings'
 import { collectorStatus } from './collector'
 import type { TaxMethod } from './engine/taxReport'
+import { latestSpot } from './prices'
 
 export interface Sample {
   name: string
@@ -91,9 +92,17 @@ async function collectSamples(): Promise<Sample[]> {
 const TTL_MS = 5 * 60 * 1000
 let cache: { at: number; text: string } | null = null
 
+/** Live price lines; not cached, since the value is refreshed every 60 s. */
+function spotSamples(): Sample[] {
+  const s = latestSpot()
+  if (!s) return []
+  return [
+    { name: 'stakingtracker_eth_spot_price', help: 'Current ETH price (Coinbase last trade), polled every 60 s.', type: 'gauge', values: [{ labels: { currency: s.currency }, value: s.price }] },
+    { name: 'stakingtracker_eth_spot_price_timestamp_seconds', help: 'Unix time of the last successful spot price fetch.', type: 'gauge', values: [{ value: s.at / 1000 }] },
+  ]
+}
+
 export async function metricsText(now = Date.now()): Promise<string> {
-  if (cache && now - cache.at < TTL_MS) return cache.text
-  const text = render(await collectSamples())
-  cache = { at: now, text }
-  return text
+  if (!cache || now - cache.at >= TTL_MS) cache = { at: now, text: render(await collectSamples()) }
+  return cache.text + render(spotSamples())
 }
